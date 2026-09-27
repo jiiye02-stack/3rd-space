@@ -7187,15 +7187,27 @@ type Ing = {
   low: boolean;
 };
 
+type StockMove = {
+  _id: string;
+  ingredientId: string;
+  type: "restock" | "waste" | "calibration" | "adjust";
+  qty: number; // signed: positive for restock, negative for the rest
+  note?: string;
+  staffName?: string;
+  at: string;
+};
+
 function InventoryTab({
   staffName,
   onChanged,
   devMode = false,
+  isAdmin = false,
 }: {
   menuItems: MenuItem[];
   staffName: string;
   onChanged: () => void;
   devMode?: boolean;
+  isAdmin?: boolean;
 }) {
   const [items, setItems] = useState<Ing[]>([]);
   const [loading, setLoading] = useState(true);
@@ -7216,6 +7228,19 @@ function InventoryTab({
   const [confirmDelete, setConfirmDelete] = useState<Ing | null>(null);
   const [filter, setFilter] = useState<"all" | "low" | "out">("all");
   const [sortBy, setSortBy] = useState<"name" | "pct">("pct");
+  const [historyOpen, setHistoryOpen] = useState<string | null>(null);
+  const [historyById, setHistoryById] = useState<Record<string, StockMove[]>>(
+    {},
+  );
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [confirmDeleteMove, setConfirmDeleteMove] = useState<{
+    ingId: string;
+    moveId: string;
+  } | null>(null);
+  const [confirmClearOld, setConfirmClearOld] = useState<{
+    ingId: string;
+    name: string;
+  } | null>(null);
   const [form, setForm] = useState({
     name: "",
     unit: "ml" as InvUnit,
@@ -7239,6 +7264,64 @@ function InventoryTab({
       if (r.ok) setItems(await r.json());
     } catch {}
     setLoading(false);
+  }
+
+  async function toggleHistory(ingId: string) {
+    if (historyOpen === ingId) {
+      setHistoryOpen(null);
+      return;
+    }
+    setHistoryOpen(ingId);
+    if (historyById[ingId]) return; // already fetched, use cache
+    setHistoryLoading(true);
+    try {
+      const r = await fetch(
+        `/api/inventory/moves?ingredientId=${encodeURIComponent(ingId)}`,
+      );
+      if (r.ok) {
+        const moves: StockMove[] = await r.json();
+        setHistoryById((p) => ({ ...p, [ingId]: moves }));
+      }
+    } catch {}
+    setHistoryLoading(false);
+  }
+
+  async function deleteMove(ingId: string, moveId: string) {
+    const prev = historyById[ingId] || [];
+    // Optimistic remove; roll back if the request fails.
+    setHistoryById((p) => ({
+      ...p,
+      [ingId]: prev.filter((m) => m._id !== moveId),
+    }));
+    try {
+      const r = await fetch(
+        `/api/inventory/moves?id=${encodeURIComponent(moveId)}`,
+        { method: "DELETE" },
+      );
+      if (!r.ok) setHistoryById((p) => ({ ...p, [ingId]: prev }));
+    } catch {
+      setHistoryById((p) => ({ ...p, [ingId]: prev }));
+    }
+  }
+
+  async function clearOldHistory(ingId: string, olderThanDays: number) {
+    try {
+      const r = await fetch(
+        `/api/inventory/moves?ingredientId=${encodeURIComponent(ingId)}&olderThanDays=${olderThanDays}`,
+        { method: "DELETE" },
+      );
+      if (r.ok) {
+        setHistoryLoading(true);
+        const r2 = await fetch(
+          `/api/inventory/moves?ingredientId=${encodeURIComponent(ingId)}`,
+        );
+        if (r2.ok) {
+          const moves: StockMove[] = await r2.json();
+          setHistoryById((p) => ({ ...p, [ingId]: moves }));
+        }
+        setHistoryLoading(false);
+      }
+    } catch {}
   }
 
   async function create() {
@@ -7365,9 +7448,15 @@ function InventoryTab({
           staffName={staffName}
           onClose={() => setMoveTarget(null)}
           onDone={() => {
+            const doneId = moveTarget.ing._id;
             setMoveTarget(null);
             load();
             onChanged();
+            // Drop the cached history so it refetches fresh next open.
+            setHistoryById((p) => {
+              const { [doneId]: _drop, ...rest } = p;
+              return rest;
+            });
           }}
         />
       )}
@@ -7438,6 +7527,28 @@ function InventoryTab({
             </div>
           </div>
         </div>
+      )}
+
+      {confirmDeleteMove && (
+        <ConfirmModal
+          message="Delete this history entry? This can't be undone."
+          onConfirm={() => {
+            deleteMove(confirmDeleteMove.ingId, confirmDeleteMove.moveId);
+            setConfirmDeleteMove(null);
+          }}
+          onCancel={() => setConfirmDeleteMove(null)}
+        />
+      )}
+
+      {confirmClearOld && (
+        <ConfirmModal
+          message={`Delete all ${confirmClearOld.name} history older than 90 days? This can't be undone.`}
+          onConfirm={() => {
+            clearOldHistory(confirmClearOld.ingId, 90);
+            setConfirmClearOld(null);
+          }}
+          onCancel={() => setConfirmClearOld(null)}
+        />
       )}
 
       {/* Toolbar */}
@@ -7935,7 +8046,207 @@ function InventoryTab({
                       {label}
                     </button>
                   ))}
+                  <button
+                    onClick={() => toggleHistory(i._id)}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 7,
+                      cursor: "pointer",
+                      background:
+                        historyOpen === i._id
+                          ? T.goldDim
+                          : "rgba(255,255,255,0.03)",
+                      border: `1px solid ${historyOpen === i._id ? T.gold : T.border}`,
+                      color: historyOpen === i._id ? T.gold : T.muted,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    <Clock size={11} /> History
+                  </button>
                 </div>
+
+                {historyOpen === i._id && (
+                  <div
+                    style={{
+                      borderTop: `1px solid ${T.border}`,
+                      paddingTop: 10,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    {isAdmin && !!historyById[i._id]?.length && (
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "flex-end",
+                          marginBottom: 2,
+                        }}
+                      >
+                        <button
+                          onClick={() =>
+                            setConfirmClearOld({ ingId: i._id, name: i.name })
+                          }
+                          style={{
+                            padding: "4px 10px",
+                            borderRadius: 6,
+                            cursor: "pointer",
+                            background: "rgba(239,68,68,0.06)",
+                            border: "1px solid rgba(239,68,68,0.2)",
+                            color: T.red,
+                            fontSize: 10,
+                            fontWeight: 600,
+                          }}
+                        >
+                          Clear older than 90d
+                        </button>
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                        maxHeight: 260,
+                        overflowY: "auto",
+                      }}
+                    >
+                      {historyLoading && !historyById[i._id] ? (
+                        <p style={{ color: T.muted, fontSize: 11 }}>Loading…</p>
+                      ) : !historyById[i._id]?.length ? (
+                        <p style={{ color: T.muted, fontSize: 11 }}>
+                          No stock movements logged yet.
+                        </p>
+                      ) : (
+                        historyById[i._id].map((m) => {
+                          const moveColor =
+                            m.type === "restock"
+                              ? T.green
+                              : m.type === "waste"
+                                ? T.red
+                                : m.type === "calibration"
+                                  ? T.blue
+                                  : T.muted;
+                          const moveLabel =
+                            m.type === "restock"
+                              ? "Restock"
+                              : m.type === "waste"
+                                ? "Waste"
+                                : m.type === "calibration"
+                                  ? "Calibration"
+                                  : "Recount adj.";
+                          return (
+                            <div
+                              key={m._id}
+                              style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "flex-start",
+                                gap: 10,
+                                padding: "6px 8px",
+                                borderRadius: 6,
+                                background: "rgba(255,255,255,0.02)",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  flexDirection: "column",
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    color: moveColor,
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                  }}
+                                >
+                                  {moveLabel}{" "}
+                                  <span
+                                    style={{ color: T.cream, fontWeight: 700 }}
+                                  >
+                                    {m.qty > 0 ? "+" : ""}
+                                    {m.qty}
+                                    {i.unit}
+                                  </span>
+                                </span>
+                                {m.note && (
+                                  <span
+                                    style={{ color: T.muted, fontSize: 10 }}
+                                  >
+                                    {m.note}
+                                  </span>
+                                )}
+                              </div>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "flex-start",
+                                  gap: 8,
+                                }}
+                              >
+                                <div style={{ textAlign: "right" }}>
+                                  <span
+                                    style={{
+                                      color: T.muted,
+                                      fontSize: 10,
+                                      display: "block",
+                                    }}
+                                  >
+                                    {new Date(m.at).toLocaleString("en-PH", {
+                                      timeZone: "Asia/Manila",
+                                      month: "short",
+                                      day: "numeric",
+                                      hour: "numeric",
+                                      minute: "2-digit",
+                                    })}
+                                  </span>
+                                  {m.staffName && (
+                                    <span
+                                      style={{
+                                        color: T.faint,
+                                        fontSize: 10,
+                                        display: "block",
+                                      }}
+                                    >
+                                      {m.staffName}
+                                    </span>
+                                  )}
+                                </div>
+                                {isAdmin && (
+                                  <button
+                                    onClick={() =>
+                                      setConfirmDeleteMove({
+                                        ingId: i._id,
+                                        moveId: m._id,
+                                      })
+                                    }
+                                    title="Delete entry"
+                                    style={{
+                                      padding: 3,
+                                      borderRadius: 5,
+                                      cursor: "pointer",
+                                      background: "transparent",
+                                      border: "none",
+                                      color: T.muted,
+                                      display: "flex",
+                                    }}
+                                  >
+                                    <Trash2 size={11} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {isEditing && (
                   <div
@@ -8135,7 +8446,10 @@ function StockMoveModal({
   const [saving, setSaving] = useState(false);
   const n = parseFloat(qty) || 0;
   const needsNote = type !== "restock";
-  const valid = n > 0 && (!needsNote || note.trim().length > 0);
+  // For Recount, qty IS the actual counted amount, so 0 is a legitimate
+  // entry (shelf is truly empty) — every other type needs a positive delta.
+  const hasQty = type === "adjust" ? qty.trim() !== "" && n >= 0 : n > 0;
+  const valid = hasQty && (!needsNote || note.trim().length > 0);
 
   const TITLES = {
     restock: "RESTOCK",
@@ -8149,7 +8463,7 @@ function StockMoveModal({
     calibration:
       "Purge shots, grinder dial-in, line flush — keeps the count honest.",
     adjust:
-      "Enter how much you're writing OFF after counting the actual shelf.",
+      "Enter the actual amount on the shelf right now — the system works out the adjustment for you.",
   } as const;
 
   useEffect(() => {
@@ -8158,18 +8472,47 @@ function StockMoveModal({
     return () => window.removeEventListener("keydown", fn);
   }, [onClose]);
 
+  // Recount ("adjust") takes the ACTUAL counted amount on the shelf, not a
+  // delta — prefill with the current system value so staff just corrects it
+  // to what they counted, instead of starting from a blank "0".
+  useEffect(() => {
+    if (type === "adjust") setQty(String(ing.stock));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type]);
+
   async function submit() {
     if (!valid) return;
     setSaving(true);
     try {
+      // Recount ("adjust") sends the ACTUAL counted amount above, but the
+      // backend's move endpoint only knows how to subtract a qty (same as
+      // Waste/Calibration) — it has no "set to this value" contract. So
+      // translate the counted amount into whichever real movement it
+      // represents before calling the API: less than system → write-off
+      // (type "adjust", the existing subtract behavior); more than system
+      // → restock.
+      let apiType: "restock" | "waste" | "calibration" | "adjust" = type;
+      let apiQty = n;
+      if (type === "adjust") {
+        const diff = ing.stock - n; // positive = shelf has less, negative = shelf has more
+        if (diff === 0) {
+          onDone();
+          setSaving(false);
+          return;
+        }
+        apiType = diff > 0 ? "adjust" : "restock";
+        apiQty = Math.abs(diff);
+      }
       const r = await fetch("/api/inventory/move", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ingredientId: ing._id,
-          type,
-          qty: n,
-          note: note.trim(),
+          type: apiType,
+          qty: apiQty,
+          note:
+            note.trim() ||
+            (type === "adjust" ? `Recount: ${n}${ing.unit}` : ""),
         }),
       });
       if (r.ok) onDone();
@@ -8180,7 +8523,8 @@ function StockMoveModal({
     setSaving(false);
   }
 
-  const after = type === "restock" ? ing.stock + n : ing.stock - n;
+  const after =
+    type === "adjust" ? n : type === "restock" ? ing.stock + n : ing.stock - n;
   const afterPct = ing.capacity > 0 ? (after / ing.capacity) * 100 : 0;
 
   return (
@@ -8277,7 +8621,9 @@ function StockMoveModal({
               marginBottom: 6,
             }}
           >
-            QTY ({ing.unit})
+            {type === "adjust"
+              ? `ACTUAL COUNT (${ing.unit})`
+              : `QTY (${ing.unit})`}
           </label>
           <input
             type="number"
@@ -8339,7 +8685,7 @@ function StockMoveModal({
           />
         </div>
 
-        {n > 0 && (
+        {(type === "adjust" ? qty.trim() !== "" : n > 0) && (
           <div
             style={{
               background: "rgba(255,255,255,0.03)",
@@ -8347,21 +8693,41 @@ function StockMoveModal({
               borderRadius: 10,
               padding: "10px 14px",
               display: "flex",
-              justifyContent: "space-between",
+              flexDirection: "column",
+              gap: 6,
             }}
           >
-            <span style={{ color: T.muted, fontSize: 12 }}>After this</span>
-            <span
-              style={{
-                color: afterPct <= ing.lowPct ? T.red : T.green,
-                fontSize: 13,
-                fontWeight: 700,
-                fontFamily: "'Cinzel',serif",
-              }}
-            >
-              {Math.round(after)}
-              {ing.unit} · {Math.round(afterPct)}%
-            </span>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: T.muted, fontSize: 12 }}>After this</span>
+              <span
+                style={{
+                  color: afterPct <= ing.lowPct ? T.red : T.green,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  fontFamily: "'Cinzel',serif",
+                }}
+              >
+                {Math.round(after)}
+                {ing.unit} · {Math.round(afterPct)}%
+              </span>
+            </div>
+            {type === "adjust" && ing.stock !== n && (
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 11,
+                }}
+              >
+                <span style={{ color: T.muted }}>
+                  {ing.stock - n > 0 ? "Writing off" : "Restocking"}
+                </span>
+                <span style={{ color: T.gold }}>
+                  {Math.abs(ing.stock - n)}
+                  {ing.unit}
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -20894,6 +21260,7 @@ export default function AdminDashboard() {
             staffName={staffName}
             onChanged={() => fetchData(true)}
             devMode={devMode}
+            isAdmin={isAdmin}
           />
         ) : (
           <AccountsTab />
