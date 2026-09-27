@@ -19127,6 +19127,20 @@ export default function AdminDashboard() {
               s + it.price * it.quantity - (it.discountAmount || 0),
             0,
           ) + ((o as any).deliveryFee || 0);
+        // Keep a split payment's cash portion in sync with the discounted
+        // total. GCash amount stays fixed (usually already verified via
+        // screenshot/reference); cash absorbs the difference so
+        // cashAmount + gcashAmount always equals the current total.
+        if ((o as any).paymentMethod === "split") {
+          const gcashAmount = (o as any).gcashAmount ?? 0;
+          const newCashAmount = Math.max(0, newTotal - gcashAmount);
+          return {
+            ...o,
+            items,
+            total: newTotal,
+            cashAmount: newCashAmount,
+          } as any;
+        }
         return { ...o, items, total: newTotal };
       }),
     );
@@ -19183,6 +19197,17 @@ export default function AdminDashboard() {
               s + it.price * it.quantity - (it.discountAmount || 0),
             0,
           ) + ((o as any).deliveryFee || 0);
+        // See applyItemDiscount: keep split cash portion synced with total.
+        if ((o as any).paymentMethod === "split") {
+          const gcashAmount = (o as any).gcashAmount ?? 0;
+          const newCashAmount = Math.max(0, newTotal - gcashAmount);
+          return {
+            ...o,
+            items,
+            total: newTotal,
+            cashAmount: newCashAmount,
+          } as any;
+        }
         return { ...o, items, total: newTotal };
       }),
     );
