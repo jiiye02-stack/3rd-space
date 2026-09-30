@@ -8445,10 +8445,13 @@ function StockMoveModal({
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const n = parseFloat(qty) || 0;
-  const needsNote = type !== "restock";
+  const needsNote = type !== "restock" && !(type === "calibration" && n === 0);
   // For Recount, qty IS the actual counted amount, so 0 is a legitimate
   // entry (shelf is truly empty) — every other type needs a positive delta.
-  const hasQty = type === "adjust" ? qty.trim() !== "" && n >= 0 : n > 0;
+  const hasQty =
+    type === "adjust" || type === "calibration"
+      ? qty.trim() !== "" && n >= 0
+      : n > 0;
   const valid = hasQty && (!needsNote || note.trim().length > 0);
 
   const TITLES = {
@@ -8491,6 +8494,11 @@ function StockMoveModal({
       // represents before calling the API: less than system → write-off
       // (type "adjust", the existing subtract behavior); more than system
       // → restock.
+      if (type === "calibration" && n === 0) {
+        onDone();
+        setSaving(false);
+        return;
+      }
       let apiType: "restock" | "waste" | "calibration" | "adjust" = type;
       let apiQty = n;
       if (type === "adjust") {
@@ -8512,7 +8520,11 @@ function StockMoveModal({
           qty: apiQty,
           note:
             note.trim() ||
-            (type === "adjust" ? `Recount: ${n}${ing.unit}` : ""),
+            (type === "adjust"
+              ? `Recount: ${n}${ing.unit}`
+              : type === "calibration" && n === 0
+                ? "No calibration loss"
+                : ""),
         }),
       });
       if (r.ok) onDone();
