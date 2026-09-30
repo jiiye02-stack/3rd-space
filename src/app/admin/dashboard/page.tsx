@@ -8025,7 +8025,7 @@ function InventoryTab({
                     [
                       ["restock", "+ Restock", T.green],
                       ["waste", "Waste", T.red],
-                      ["calibration", "Calibration", T.blue],
+                      // ["calibration", "Calibration", T.blue],
                       ["adjust", "Recount", T.muted],
                     ] as const
                   ).map(([type, label, color]) => (
