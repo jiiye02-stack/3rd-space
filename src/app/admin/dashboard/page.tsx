@@ -8494,11 +8494,6 @@ function StockMoveModal({
       // represents before calling the API: less than system → write-off
       // (type "adjust", the existing subtract behavior); more than system
       // → restock.
-      if (type === "calibration" && n === 0) {
-        onDone();
-        setSaving(false);
-        return;
-      }
       let apiType: "restock" | "waste" | "calibration" | "adjust" = type;
       let apiQty = n;
       if (type === "adjust") {
