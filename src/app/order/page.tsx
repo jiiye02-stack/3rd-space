@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { compressImage } from "@/lib/compressImage";
+import { sortTitles, sectionOf, itemRank } from "@/lib/menuOrder";
 import {
   ShoppingCart,
   Plus,
@@ -30,6 +31,27 @@ import {
   Leaf,
   Coffee,
 } from "lucide-react";
+
+/* ─── SECTION TAGLINES ─────────────────────────────────────────────────── */
+const SECTION_TAGLINES: Record<string, string> = {
+  classics: "Simple, pero hindi ordinaryo.",
+  "flavored latte": "May flavor ang bawat mood.",
+  "signature latte": "May sariling timpla, may sariling kwento.",
+  "matcha series": "Green na, sarap pa.",
+  "house tea": "Higop muna, bago problema.",
+  soda: "Fizz, sip, repeat.",
+  "house meals": "Parang lutong bahay, pero nasa labas.",
+  "savory meals": "Malasa hanggang huling subo.",
+  "noodles and soup": "Sobra sa isa, kulang sa dalawa.",
+  pasta: "Isang forkful, tuloy-tuloy na.",
+  "student meal": "Busog kahit student budget.",
+  "appetizers and snacks": "Pang-share daw. Pero depende sa'yo.",
+  waffles: "Crispy sa labas, happy sa loob.",
+};
+const taglineFor = (title: string) =>
+  SECTION_TAGLINES[
+    String(title).toLowerCase().replace(/&/g, "and").replace(/\s+/g, " ").trim()
+  ] || "";
 
 /* ─── TOKENS ──────────────────────────────────────────────────────────────── */
 const G = "#d4a843";
@@ -1792,7 +1814,11 @@ function VariantSheet({
                 {item.name}
               </p>
               <p style={{ color: CM, fontSize: 12, marginTop: 2 }}>
-                Choose your variant
+                {((item.variants || []) as any[]).some((v) =>
+                  /^(hot|iced?)$/i.test(typeof v === "string" ? v : v.label),
+                )
+                  ? "Hot or iced?"
+                  : "Choose your variant"}
               </p>
             </div>
           </div>
@@ -2156,28 +2182,93 @@ function MenuScreen({
   onBack,
   shopOpen,
 }: any) {
-  const categories = Array.from(
-    new Set(menuItems.map((i: MenuItem) => i.category)),
-  ).filter((cat) => {
-    const c = (cat as string).toLowerCase();
-    return (
-      !c.includes("add-on") &&
-      !c.includes("substitut") &&
-      !c.includes("sauce") &&
-      !c.includes("egg style")
-    );
-  }) as string[];
-
-  const visibleMenuItems = menuItems.filter((i: MenuItem) => {
+  const isMenuCategory = (i: MenuItem) => {
     const c = i.category.toLowerCase();
     return (
-      i.available &&
       !c.includes("add-on") &&
       !c.includes("substitut") &&
       !c.includes("sauce") &&
       !c.includes("egg style")
     );
+  };
+
+  // Hot / Iced merge — items named like "Hot Americano" + "Iced Americano"
+  // (or "Americano (Hot)" / "Americano Iced") collapse into ONE "Americano"
+  // card. Tapping it opens the Hot / Iced picker; each choice adds the real
+  // menu item, so its price, stock deduction and options stay its own.
+  // Only merges when both a Hot and an Iced version exist in the menu.
+  const tempInfo = (name: string) => {
+    const hot = /\bhot\b/i.test(name);
+    const iced = /\bice[d]?\b(?!\s*cream)/i.test(name);
+    if (hot === iced) return null;
+    const base = name
+      .replace(/\(\s*(hot|iced?)\s*\)/gi, "")
+      .replace(/\b(hot|ice[d]?)\b(?!\s*cream)/gi, "")
+      .replace(/\s+/g, " ")
+      .replace(/^[\s\-\/]+|[\s\-\/]+$/g, "");
+    if (!base) return null;
+    return { label: hot ? "Hot" : "Iced", base };
+  };
+
+  const tempGroups = new Map<string, MenuItem[]>();
+  menuItems.filter(isMenuCategory).forEach((i: MenuItem) => {
+    const t = tempInfo(i.name);
+    if (!t) return;
+    const key = t.base.toLowerCase();
+    tempGroups.set(key, [...(tempGroups.get(key) || []), i]);
   });
+
+  const visibleMenuItems: MenuItem[] = (() => {
+    const out: MenuItem[] = [];
+    const done = new Set<string>();
+    menuItems.filter(isMenuCategory).forEach((i: MenuItem) => {
+      const t = tempInfo(i.name);
+      const group = t ? tempGroups.get(t.base.toLowerCase()) : undefined;
+      const hasBoth =
+        !!group && new Set(group.map((g) => tempInfo(g.name)!.label)).size >= 2;
+      if (!t || !hasBoth) {
+        if (i.available) out.push(i);
+        return;
+      }
+      const key = t.base.toLowerCase();
+      if (done.has(key)) return;
+      done.add(key);
+      const avail = group!
+        .filter((g) => g.available)
+        .sort((a, b) =>
+          tempInfo(a.name)!.label === "Hot"
+            ? -1
+            : tempInfo(b.name)!.label === "Hot"
+              ? 1
+              : 0,
+        );
+      if (avail.length === 0) return;
+      if (avail.length === 1) {
+        // only one temperature is switched on — show it as a plain item
+        out.push({
+          ...avail[0],
+          name: `${t.base} (${tempInfo(avail[0].name)!.label})`,
+        });
+        return;
+      }
+      out.push({
+        ...avail[0],
+        name: t.base,
+        price: Math.min(...avail.map((a) => a.price)),
+        image: avail.find((a) => a.image)?.image || avail[0].image,
+        variants: avail.map((a) => ({
+          label: tempInfo(a.name)!.label,
+          price: a.price,
+          src: a,
+        })) as any,
+      });
+    });
+    return out;
+  })();
+
+  const categories = sortTitles(
+    Array.from(new Set(visibleMenuItems.map((i: MenuItem) => sectionOf(i)))),
+  );
 
   const [active, setActive] = useState(categories[0] || "");
   const [search, setSearch] = useState("");
@@ -2327,6 +2418,19 @@ function MenuScreen({
     ],
   };
 
+  // Sections / items the paper menu marks (HOT/ICED) — they get the Hot / Iced
+  // picker even though they are a single menu item. Prices stay the item's own.
+  const HOT_ICED_SECTIONS = [
+    "flavored latte",
+    "signature latte",
+    "matcha series",
+    "house tea",
+  ];
+  const needsHotIced = (item: MenuItem) =>
+    HOT_ICED_SECTIONS.includes(String(sectionOf(item)).toLowerCase()) ||
+    /^caf[eé]\s+latte$/i.test(item.name.trim()) ||
+    /^chocolate\s+oat/i.test(item.name.trim());
+
   const handleAddToCartWithCustomization = (item: MenuItem) => {
     // Check variants FIRST — VariantSheet.onSelect already chains into
     // GenericOptionsSheet when the resolved item has options, so items
@@ -2342,8 +2446,13 @@ function MenuScreen({
       )?.[1];
       const effectiveVariants =
         item.variants && item.variants.length > 0
-          ? item.variants.map((v) => ({ label: v }))
-          : nameVariants;
+          ? item.variants.map((v: any) =>
+              typeof v === "string" ? { label: v } : v,
+            )
+          : nameVariants ||
+            (needsHotIced(item)
+              ? [{ label: "Hot" }, { label: "Iced" }]
+              : undefined);
       if (effectiveVariants && effectiveVariants.length > 0) {
         setVariantItem({ ...item, variants: effectiveVariants as any });
         return;
@@ -2397,7 +2506,12 @@ function MenuScreen({
       ? visibleMenuItems.filter(
           (i: MenuItem) =>
             i.name.toLowerCase().includes(search.toLowerCase()) ||
-            i.description.toLowerCase().includes(search.toLowerCase()),
+            i.description.toLowerCase().includes(search.toLowerCase()) ||
+            ((i.variants || []) as any[]).some((v) =>
+              (typeof v === "string" ? v : v.label)
+                .toLowerCase()
+                .includes(search.toLowerCase()),
+            ),
         )
       : null;
 
@@ -2712,10 +2826,13 @@ function MenuScreen({
               categories.map((cat) => {
                 const items = [
                   ...visibleMenuItems.filter(
-                    (i: MenuItem) => i.category === cat,
+                    (i: MenuItem) => sectionOf(i) === cat,
                   ),
                 ].sort((a: MenuItem, b: MenuItem) => {
                   const n = (s: string) => s.toLowerCase();
+                  const ra = itemRank(cat, a.name);
+                  const rb = itemRank(cat, b.name);
+                  if (ra !== rb) return ra - rb;
                   const aIced =
                     n(a.name).startsWith("ice") || n(a.name).includes("(iced)");
                   const bIced =
@@ -2761,6 +2878,18 @@ function MenuScreen({
                         }}
                       />
                     </div>
+                    {taglineFor(cat) && (
+                      <p
+                        style={{
+                          color: CM,
+                          fontSize: "clamp(12px,3vw,13px)",
+                          fontStyle: "italic",
+                          margin: "-6px 0 14px",
+                        }}
+                      >
+                        {taglineFor(cat)}
+                      </p>
+                    )}
 
                     <div
                       style={{
@@ -2879,8 +3008,11 @@ function MenuScreen({
           item={variantItem}
           onClose={() => setVariantItem(null)}
           onSelect={(variant, price) => {
+            const srcItem = (variantItem.variants as any[]).find(
+              (v: any) => v.label === variant,
+            )?.src;
             const itemWithVariant = {
-              ...variantItem,
+              ...(srcItem || variantItem),
               name: `${variantItem.name} (${variant})`,
               ...(price != null ? { price } : {}),
             };

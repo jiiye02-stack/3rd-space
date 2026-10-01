@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { buildEscPosReceipt, escPosToRawBtUrl } from "@/lib/escpos";
 import { compressImage } from "@/lib/compressImage";
+import { sortTitles, sectionOf, itemRank } from "@/lib/menuOrder";
 import {
   ChevronDown,
   ChevronUp,
@@ -6407,7 +6408,9 @@ function MenuTab({
     );
   }, [items]);
 
-  const categories = Array.from(new Set(localItems.map((i) => i.category)));
+  const categories = sortTitles(
+    Array.from(new Set(localItems.map((i) => sectionOf(i)))),
+  );
 
   async function saveItem(data: Partial<MenuItem>): Promise<boolean> {
     const isEdit = !!editItem;
@@ -6475,40 +6478,93 @@ function MenuTab({
     }
   }
 
+  // Hot/Iced grouping for the admin grid
+  const tKind = (n: string) => {
+    const h = /\bhot\b/i.test(n);
+    const i = /\bice[d]?\b(?!\s*cream)/i.test(n);
+    return h === i ? null : h ? "hot" : "iced";
+  };
+  const tBase = (n: string) =>
+    n
+      .replace(/\(\s*(hot|iced?)\s*\)/gi, "")
+      .replace(/\b(hot|ice[d]?)\b(?!\s*cream)/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  const twinOf = (item: MenuItem): MenuItem | null => {
+    const k = tKind(item.name);
+    if (!k) return null;
+    return (
+      localItems.find(
+        (o) =>
+          o._id !== item._id &&
+          tKind(o.name) &&
+          tKind(o.name) !== k &&
+          tBase(o.name).toLowerCase() === tBase(item.name).toLowerCase() &&
+          sectionOf(o) === sectionOf(item),
+      ) || null
+    );
+  };
+
   async function toggleAvail(item: MenuItem) {
-    const isHardcoded = item._id.startsWith("hardcoded-");
     const newVal = !item.available;
-    if (isHardcoded) {
+
+    // Hot/Iced twin: "Hot Cafe Latte" <-> "Iced Cafe Latte"
+    const baseOf = (name: string) =>
+      name
+        .replace(/\(\s*(hot|iced?)\s*\)/gi, "")
+        .replace(/\b(hot|ice[d]?)\b(?!\s*cream)/gi, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+    const isHot = (n: string) => /\bhot\b/i.test(n);
+    const isIced = (n: string) => /\bice[d]?\b(?!\s*cream)/i.test(n);
+    const twins = localItems.filter(
+      (o) =>
+        o._id !== item._id &&
+        o.available !== newVal &&
+        !o._id.startsWith("hardcoded-") &&
+        ((isHot(item.name) && isIced(o.name)) ||
+          (isIced(item.name) && isHot(o.name))) &&
+        baseOf(o.name) === baseOf(item.name),
+    );
+    const targets = [item, ...twins];
+    const ids = new Set(targets.map((t) => t._id));
+
+    if (item._id.startsWith("hardcoded-")) {
       setLocalItems((prev) =>
         prev.map((i) => (i._id === item._id ? { ...i, available: newVal } : i)),
       );
       return;
     }
-    busyIdsRef.current.add(item._id);
+
+    targets.forEach((t) => busyIdsRef.current.add(t._id));
     setLocalItems((prev) =>
-      prev.map((i) => (i._id === item._id ? { ...i, available: newVal } : i)),
+      prev.map((i) => (ids.has(i._id) ? { ...i, available: newVal } : i)),
     );
     try {
-      const res = await fetch(`/api/menu/${item._id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ available: newVal }),
-      });
-      if (!res.ok) {
+      const results = await Promise.all(
+        targets.map((t) =>
+          fetch(`/api/menu/${t._id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ available: newVal }),
+          }).then((r) => ({ id: t._id, ok: r.ok })),
+        ),
+      );
+      const failed = new Set(results.filter((r) => !r.ok).map((r) => r.id));
+      if (failed.size) {
         setLocalItems((prev) =>
           prev.map((i) =>
-            i._id === item._id ? { ...i, available: item.available } : i,
+            failed.has(i._id) ? { ...i, available: !newVal } : i,
           ),
         );
       }
     } catch {
       setLocalItems((prev) =>
-        prev.map((i) =>
-          i._id === item._id ? { ...i, available: item.available } : i,
-        ),
+        prev.map((i) => (ids.has(i._id) ? { ...i, available: !newVal } : i)),
       );
     } finally {
-      busyIdsRef.current.delete(item._id);
+      targets.forEach((t) => busyIdsRef.current.delete(t._id));
     }
   }
 
@@ -6964,186 +7020,270 @@ function MenuTab({
                 }}
               >
                 {localItems
-                  .filter((i) => i.category === cat)
-                  .map((item) => (
-                    <div
-                      key={item._id}
-                      style={{
-                        background: T.bgCard,
-                        border: `1px solid ${editItem?._id === item._id ? T.gold : T.border}`,
-                        borderRadius: 12,
-                        overflow: "hidden",
-                        transition: "all .2s",
-                        opacity: item.available ? 1 : 0.55,
-                        position: "relative",
-                      }}
-                      onMouseEnter={(e) =>
-                        (e.currentTarget.style.borderColor = T.borderH)
-                      }
-                      onMouseLeave={(e) =>
-                        (e.currentTarget.style.borderColor =
-                          editItem?._id === item._id ? T.gold : T.border)
-                      }
-                    >
-                      {item.image && (
-                        <div
-                          style={{
-                            height: 80,
-                            overflow: "hidden",
-                            background: "rgba(212,168,67,0.05)",
-                          }}
-                        >
-                          <img
-                            src={item.image}
-                            alt={item.name}
-                            loading="lazy"
-                            decoding="async"
-                            width={240}
-                            height={80}
-                            style={{
-                              width: "100%",
-                              height: "100%",
-                              objectFit: "cover",
-                              contentVisibility: "auto",
-                            }}
-                            onError={(e) =>
-                              (e.currentTarget.style.display = "none")
-                            }
-                          />
-                        </div>
-                      )}
+                  .filter((i) => sectionOf(i) === cat)
+                  .sort((a, b) => itemRank(cat, a.name) - itemRank(cat, b.name))
+                  .filter((i) => !(tKind(i.name) === "iced" && twinOf(i)))
+                  .map((item) => {
+                    const twin = twinOf(item);
+                    const on = twin
+                      ? item.available || twin.available
+                      : item.available;
+                    return (
                       <div
+                        key={item._id}
                         style={{
-                          padding: "11px 13px",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 8,
+                          background: T.bgCard,
+                          border: `1px solid ${editItem?._id === item._id ? T.gold : T.border}`,
+                          borderRadius: 12,
+                          overflow: "hidden",
+                          transition: "all .2s",
+                          opacity: on ? 1 : 0.55,
+                          position: "relative",
                         }}
+                        onMouseEnter={(e) =>
+                          (e.currentTarget.style.borderColor = T.borderH)
+                        }
+                        onMouseLeave={(e) =>
+                          (e.currentTarget.style.borderColor =
+                            editItem?._id === item._id ? T.gold : T.border)
+                        }
                       >
+                        {item.image && (
+                          <div
+                            style={{
+                              height: 80,
+                              overflow: "hidden",
+                              background: "rgba(212,168,67,0.05)",
+                            }}
+                          >
+                            <img
+                              src={item.image}
+                              alt={item.name}
+                              loading="lazy"
+                              decoding="async"
+                              width={240}
+                              height={80}
+                              style={{
+                                width: "100%",
+                                height: "100%",
+                                objectFit: "cover",
+                                contentVisibility: "auto",
+                              }}
+                              onError={(e) =>
+                                (e.currentTarget.style.display = "none")
+                              }
+                            />
+                          </div>
+                        )}
                         <div
                           style={{
+                            padding: "11px 13px",
                             display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "flex-start",
+                            flexDirection: "column",
+                            gap: 8,
                           }}
                         >
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <p
-                              style={{
-                                color: T.cream,
-                                fontSize: 13,
-                                fontWeight: 600,
-                                marginBottom: 2,
-                              }}
-                            >
-                              {item.name}
-                            </p>
-                            {item.description && (
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "flex-start",
+                            }}
+                          >
+                            <div style={{ flex: 1, minWidth: 0 }}>
                               <p
                                 style={{
-                                  color: T.muted,
-                                  fontSize: 11,
-                                  lineHeight: 1.4,
-                                  display: "-webkit-box",
-                                  WebkitLineClamp: 2,
-                                  WebkitBoxOrient: "vertical",
-                                  overflow: "hidden",
+                                  color: T.cream,
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  marginBottom: 2,
                                 }}
                               >
-                                {item.description}
+                                {twin ? tBase(item.name) : item.name}
                               </p>
+                              {item.description && (
+                                <p
+                                  style={{
+                                    color: T.muted,
+                                    fontSize: 11,
+                                    lineHeight: 1.4,
+                                    display: "-webkit-box",
+                                    WebkitLineClamp: 2,
+                                    WebkitBoxOrient: "vertical",
+                                    overflow: "hidden",
+                                  }}
+                                >
+                                  {item.description}
+                                </p>
+                              )}
+                            </div>
+                            <span
+                              style={{
+                                fontFamily: "'Cinzel',serif",
+                                fontSize: 15,
+                                fontWeight: 700,
+                                color: T.gold,
+                                marginLeft: 8,
+                                flexShrink: 0,
+                              }}
+                            >
+                              {twin ? (
+                                <span
+                                  style={{
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    alignItems: "flex-end",
+                                    fontSize: 12,
+                                    lineHeight: 1.35,
+                                  }}
+                                >
+                                  <span>Hot {fmt(item.price)}</span>
+                                  <span>Iced {fmt(twin.price)}</span>
+                                </span>
+                              ) : (
+                                fmt(item.price)
+                              )}
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              gap: 6,
+                              marginTop: 2,
+                            }}
+                          >
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleAvail(item);
+                              }}
+                              style={{
+                                flex: twin ? "1 1 100%" : 1,
+                                padding: "7px 8px",
+                                borderRadius: 6,
+                                cursor: "pointer",
+                                fontSize: 11,
+                                background: on
+                                  ? "rgba(34,197,94,0.08)"
+                                  : "rgba(239,68,68,0.08)",
+                                border: `1px solid ${on ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+                                color: on ? T.green : T.red,
+                                fontWeight: 600,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                gap: 4,
+                              }}
+                            >
+                              {on ? "✓ On Menu" : "✗ Hidden"}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startEdit(item);
+                              }}
+                              style={{
+                                flex: twin ? 1 : undefined,
+                                justifyContent: twin ? "center" : undefined,
+                                padding: "7px 12px",
+                                borderRadius: 6,
+                                cursor: "pointer",
+                                background:
+                                  editItem?._id === item._id
+                                    ? T.goldDim
+                                    : "rgba(212,168,67,0.06)",
+                                border: `1px solid ${editItem?._id === item._id ? T.gold : "rgba(212,168,67,0.2)"}`,
+                                color: T.gold,
+                                fontSize: 11,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 4,
+                              }}
+                            >
+                              <Edit2 size={12} /> {twin ? "Hot" : "Edit"}
+                            </button>
+                            {twin && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startEdit(twin);
+                                }}
+                                style={{
+                                  flex: 1,
+                                  justifyContent: "center",
+                                  padding: "7px 12px",
+                                  borderRadius: 6,
+                                  cursor: "pointer",
+                                  background:
+                                    editItem?._id === twin._id
+                                      ? T.goldDim
+                                      : "rgba(212,168,67,0.06)",
+                                  border: `1px solid ${editItem?._id === twin._id ? T.gold : "rgba(212,168,67,0.2)"}`,
+                                  color: T.gold,
+                                  fontSize: 11,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                }}
+                              >
+                                <Edit2 size={12} /> Iced
+                              </button>
+                            )}
+                            <button
+                              disabled={busyIds.has(item._id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteTarget(item._id);
+                              }}
+                              style={{
+                                padding: "7px 12px",
+                                borderRadius: 6,
+                                cursor: busyIds.has(item._id)
+                                  ? "wait"
+                                  : "pointer",
+                                background: "rgba(239,68,68,0.07)",
+                                border: "1px solid rgba(239,68,68,0.2)",
+                                color: T.red,
+                                fontSize: 11,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 4,
+                                opacity: busyIds.has(item._id) ? 0.5 : 1,
+                              }}
+                            >
+                              <Trash2 size={12} />
+                              {twin && " Hot"}
+                            </button>
+                            {twin && (
+                              <button
+                                title="Delete Iced"
+                                disabled={busyIds.has(twin._id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteTarget(twin._id);
+                                }}
+                                style={{
+                                  padding: "7px 12px",
+                                  borderRadius: 6,
+                                  cursor: "pointer",
+                                  background: "rgba(239,68,68,0.07)",
+                                  border: "1px solid rgba(239,68,68,0.2)",
+                                  color: T.red,
+                                  fontSize: 11,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                }}
+                              >
+                                <Trash2 size={12} /> Iced
+                              </button>
                             )}
                           </div>
-                          <span
-                            style={{
-                              fontFamily: "'Cinzel',serif",
-                              fontSize: 15,
-                              fontWeight: 700,
-                              color: T.gold,
-                              marginLeft: 8,
-                              flexShrink: 0,
-                            }}
-                          >
-                            {fmt(item.price)}
-                          </span>
-                        </div>
-                        <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleAvail(item);
-                            }}
-                            style={{
-                              flex: 1,
-                              padding: "7px 8px",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                              fontSize: 11,
-                              background: item.available
-                                ? "rgba(34,197,94,0.08)"
-                                : "rgba(239,68,68,0.08)",
-                              border: `1px solid ${item.available ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
-                              color: item.available ? T.green : T.red,
-                              fontWeight: 600,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              gap: 4,
-                            }}
-                          >
-                            {item.available ? "✓ On Menu" : "✗ Hidden"}
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              startEdit(item);
-                            }}
-                            style={{
-                              padding: "7px 12px",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                              background:
-                                editItem?._id === item._id
-                                  ? T.goldDim
-                                  : "rgba(212,168,67,0.06)",
-                              border: `1px solid ${editItem?._id === item._id ? T.gold : "rgba(212,168,67,0.2)"}`,
-                              color: T.gold,
-                              fontSize: 11,
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 4,
-                            }}
-                          >
-                            <Edit2 size={12} /> Edit
-                          </button>
-                          <button
-                            disabled={busyIds.has(item._id)}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDeleteTarget(item._id);
-                            }}
-                            style={{
-                              padding: "7px 12px",
-                              borderRadius: 6,
-                              cursor: busyIds.has(item._id)
-                                ? "wait"
-                                : "pointer",
-                              background: "rgba(239,68,68,0.07)",
-                              border: "1px solid rgba(239,68,68,0.2)",
-                              color: T.red,
-                              fontSize: 11,
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 4,
-                              opacity: busyIds.has(item._id) ? 0.5 : 1,
-                            }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
               </div>
             </div>
           ))}
@@ -14797,8 +14937,79 @@ function CrewTab({
       );
   }
 
-  const availItems = menuItems.filter((i) => i.available);
-  const categories = Array.from(new Set(availItems.map((i) => i.category)));
+  // Hot / Iced merge — "Hot Americano" + "Iced Americano" (or "Americano
+  // (Hot)" / "Americano Iced") show as ONE "Americano" item. Tapping it opens
+  // the Hot / Iced picker; each choice adds the real menu item, so its own
+  // price, stock deduction and options are kept. Only merges when both a Hot
+  // and an Iced version exist.
+  const tempInfo = (name: string) => {
+    const hot = /\bhot\b/i.test(name);
+    const iced = /\bice[d]?\b(?!\s*cream)/i.test(name);
+    if (hot === iced) return null;
+    const base = name
+      .replace(/\(\s*(hot|iced?)\s*\)/gi, "")
+      .replace(/\b(hot|ice[d]?)\b(?!\s*cream)/gi, "")
+      .replace(/\s+/g, " ")
+      .replace(/^[\s\-\/]+|[\s\-\/]+$/g, "");
+    if (!base) return null;
+    return { label: hot ? "Hot" : "Iced", base };
+  };
+  const tempGroups = new Map<string, MenuItem[]>();
+  menuItems.forEach((i) => {
+    const t = tempInfo(i.name);
+    if (!t) return;
+    const key = t.base.toLowerCase();
+    tempGroups.set(key, [...(tempGroups.get(key) || []), i]);
+  });
+  const availItems: MenuItem[] = (() => {
+    const out: MenuItem[] = [];
+    const done = new Set<string>();
+    menuItems.forEach((i) => {
+      const t = tempInfo(i.name);
+      const group = t ? tempGroups.get(t.base.toLowerCase()) : undefined;
+      const hasBoth =
+        !!group && new Set(group.map((g) => tempInfo(g.name)!.label)).size >= 2;
+      if (!t || !hasBoth) {
+        if (i.available) out.push(i);
+        return;
+      }
+      const key = t.base.toLowerCase();
+      if (done.has(key)) return;
+      done.add(key);
+      const avail = group!
+        .filter((g) => g.available)
+        .sort((a, b) =>
+          tempInfo(a.name)!.label === "Hot"
+            ? -1
+            : tempInfo(b.name)!.label === "Hot"
+              ? 1
+              : 0,
+        );
+      if (avail.length === 0) return;
+      if (avail.length === 1) {
+        out.push({
+          ...avail[0],
+          name: `${t.base} (${tempInfo(avail[0].name)!.label})`,
+        });
+        return;
+      }
+      out.push({
+        ...avail[0],
+        name: t.base,
+        price: Math.min(...avail.map((a) => a.price)),
+        image: avail.find((a) => a.image)?.image || avail[0].image,
+        variants: avail.map((a) => ({
+          label: tempInfo(a.name)!.label,
+          price: a.price,
+          src: a,
+        })) as any,
+      });
+    });
+    return out;
+  })();
+  const categories = sortTitles(
+    Array.from(new Set(availItems.map((i) => sectionOf(i)))),
+  );
   const activeCat = activeCategory || categories[0] || "";
   const searchQuery = itemSearch.trim().toLowerCase();
   const isSearching = searchQuery.length > 0;
@@ -14810,12 +15021,22 @@ function CrewTab({
     ? availItems.filter(
         (i) =>
           i.name.toLowerCase().includes(searchQuery) ||
-          i.category.toLowerCase().includes(searchQuery),
+          i.category.toLowerCase().includes(searchQuery) ||
+          sectionOf(i).toLowerCase().includes(searchQuery) ||
+          ((i.variants || []) as any[]).some((v) =>
+            (typeof v === "string" ? v : v.label)
+              .toLowerCase()
+              .includes(searchQuery),
+          ),
       )
-    : availItems.filter((i) => i.category === activeCat);
+    : availItems
+        .filter((i) => sectionOf(i) === activeCat)
+        .sort(
+          (a, b) => itemRank(activeCat, a.name) - itemRank(activeCat, b.name),
+        );
   const categoryCounts = categories.reduce<Record<string, number>>(
     (acc, cat) => {
-      acc[cat] = availItems.filter((i) => i.category === cat).length;
+      acc[cat] = availItems.filter((i) => sectionOf(i) === cat).length;
       return acc;
     },
     {},
@@ -14831,6 +15052,19 @@ function CrewTab({
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
   const othersTotal = othersCharges.reduce((s, c) => s + c.price, 0);
 
+  // Sections / items the paper menu marks (HOT/ICED) — they get the Hot / Iced
+  // picker even though they are a single menu item. Prices stay the item's own.
+  const HOT_ICED_SECTIONS = [
+    "flavored latte",
+    "signature latte",
+    "matcha series",
+    "house tea",
+  ];
+  const needsHotIced = (item: MenuItem) =>
+    HOT_ICED_SECTIONS.includes(String(sectionOf(item)).toLowerCase()) ||
+    /^caf[eé]\s+latte$/i.test(item.name.trim()) ||
+    /^chocolate\s+oat/i.test(item.name.trim());
+
   function addItem(item: MenuItem) {
     const hasAdminVariant = item.options?.some(
       (g) => g.name.toLowerCase() === "variant",
@@ -14842,8 +15076,13 @@ function CrewTab({
       )?.[1];
       const effectiveVariants =
         item.variants && item.variants.length > 0
-          ? item.variants.map((v) => ({ label: v }))
-          : nameVariants;
+          ? item.variants.map((v: any) =>
+              typeof v === "string" ? { label: v } : v,
+            )
+          : nameVariants ||
+            (needsHotIced(item)
+              ? [{ label: "Hot" }, { label: "Iced" }]
+              : undefined);
       if (effectiveVariants && effectiveVariants.length > 0) {
         setVariantItem({ ...item, variants: effectiveVariants as any });
         return;
@@ -16098,7 +16337,11 @@ function CrewTab({
                   {variantItem.name}
                 </p>
                 <p style={{ color: T.muted, fontSize: 12, marginTop: 4 }}>
-                  Choose your variant
+                  {(variantItem.variants || []).some((v: any) =>
+                    /^(hot|iced?)$/i.test(typeof v === "string" ? v : v.label),
+                  )
+                    ? "Hot or iced?"
+                    : "Choose your variant"}
                 </p>
               </div>
               <button
@@ -16132,7 +16375,7 @@ function CrewTab({
                     key={label}
                     onClick={() => {
                       const resolved = {
-                        ...variantItem,
+                        ...((v as any)?.src || variantItem),
                         name: `${variantItem.name} (${label})`,
                         ...(price != null ? { price } : {}),
                       };
