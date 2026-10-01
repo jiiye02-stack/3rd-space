@@ -301,7 +301,7 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
@@ -310,6 +310,14 @@ export async function DELETE(
     const order = await Order.findById(id);
     if (!order)
       return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    if (["completed", "cancelled"].includes(order.status)) {
+      const expected = process.env.DELETE_PASSWORD || "3890";
+      if (req.headers.get("x-delete-password") !== expected) {
+        return NextResponse.json({ error: "Wrong password" }, { status: 403 });
+      }
+    }
+
     if (order.receiptKey) await deleteFromR2(order.receiptKey);
     await order.deleteOne();
     return NextResponse.json({ success: true });

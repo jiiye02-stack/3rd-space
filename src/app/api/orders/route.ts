@@ -523,7 +523,17 @@ export async function DELETE(req: NextRequest) {
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
-  await Order.findByIdAndDelete(id);
+  const order = await Order.findById(id);
+  if (!order) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  if (["completed", "cancelled"].includes(order.status)) {
+    const expected = process.env.DELETE_PASSWORD || "3890";
+    if (req.headers.get("x-delete-password") !== expected) {
+      return NextResponse.json({ error: "Wrong password" }, { status: 403 });
+    }
+  }
+
+  await order.deleteOne();
   notifyClients();
   return NextResponse.json({ success: true });
 }

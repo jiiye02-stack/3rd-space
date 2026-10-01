@@ -1602,6 +1602,148 @@ function ConfirmModal({
   );
 }
 
+// ── PASSWORD MODAL ───────────────────────────────────────────────────────────
+function PasswordModal({
+  message,
+  password,
+  onConfirm,
+  onCancel,
+}: {
+  message: string;
+  password: string;
+  onConfirm: (pw: string) => void;
+  onCancel: () => void;
+}) {
+  const [val, setVal] = useState("");
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onCancel]);
+
+  function submit() {
+    if (val === password) onConfirm(val);
+    else {
+      setErr(true);
+      setVal("");
+    }
+  }
+
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 3000,
+        background: "rgba(0,0,0,0.8)",
+        backdropFilter: "blur(6px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "0 16px",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="modal-inner"
+        style={{
+          background: "#13180f",
+          border: "1px solid rgba(239,68,68,0.4)",
+          borderRadius: 18,
+          padding: "clamp(20px,5vw,32px) clamp(16px,4vw,28px)",
+          maxWidth: 360,
+          width: "100%",
+          textAlign: "center",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.8)",
+        }}
+      >
+        <Shield size={32} color={T.red} style={{ margin: "0 auto 12px" }} />
+        <p
+          style={{
+            color: T.cream,
+            fontSize: 14,
+            lineHeight: 1.6,
+            marginBottom: 16,
+          }}
+        >
+          {message}
+        </p>
+        <input
+          type="password"
+          inputMode="numeric"
+          autoFocus
+          value={val}
+          onChange={(e) => {
+            setVal(e.target.value);
+            setErr(false);
+          }}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          placeholder="Enter password"
+          style={{
+            width: "100%",
+            background: "rgba(255,255,255,0.04)",
+            border: `1px solid ${err ? "rgba(239,68,68,0.6)" : T.borderH}`,
+            borderRadius: 10,
+            padding: "11px 14px",
+            color: T.cream,
+            fontSize: 16,
+            textAlign: "center",
+            letterSpacing: ".3em",
+            outline: "none",
+            boxSizing: "border-box",
+            marginBottom: 8,
+          }}
+        />
+        {err && (
+          <p style={{ color: T.red, fontSize: 12, marginBottom: 8 }}>
+            Wrong password.
+          </p>
+        )}
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <button
+            onClick={submit}
+            disabled={!val}
+            style={{
+              flex: 1,
+              padding: "11px",
+              background: val
+                ? "rgba(239,68,68,0.12)"
+                : "rgba(255,255,255,0.04)",
+              border: `1px solid ${val ? "rgba(239,68,68,0.5)" : T.border}`,
+              borderRadius: 10,
+              color: val ? T.red : T.muted,
+              fontFamily: "'Cinzel',serif",
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: ".08em",
+              cursor: val ? "pointer" : "not-allowed",
+            }}
+          >
+            DELETE
+          </button>
+          <button
+            onClick={onCancel}
+            style={{
+              padding: "11px 24px",
+              background: "rgba(255,255,255,0.05)",
+              border: `1px solid ${T.border}`,
+              borderRadius: 10,
+              color: T.muted,
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Badge({ status }: { status: OrderStatus }) {
   const { label, color } = STATUS_CFG[status];
   return (
@@ -20436,6 +20578,8 @@ export default function AdminDashboard() {
   }
 
   function deleteOrder(id: string) {
+    const o = orders.find((x) => x._id === id);
+    console.log("[deleteOrder]", id, o?.status);
     setActiveConfirm({ id, type: "order" });
   }
 
@@ -21837,15 +21981,18 @@ export default function AdminDashboard() {
           onCancel={() => setConfirmClose(false)}
         />
       )}
-      {activeConfirm?.type === "order" && (
-        <ConfirmModal
-          message="Delete this order? This cannot be undone."
-          onConfirm={async () => {
-            const id = activeConfirm.id;
+      {activeConfirm?.type === "order" &&
+        (() => {
+          const id = activeConfirm.id;
+          const isCompleted = ["completed", "cancelled"].includes(
+            orders.find((o) => o._id === id)?.status ?? "",
+          );
+          const runDelete = async (pw?: string) => {
             setActiveConfirm(null);
             try {
               const res = await fetch(`/api/orders/${id}`, {
                 method: "DELETE",
+                headers: pw ? { "x-delete-password": pw } : {},
               });
               if (!res.ok) throw new Error();
               setOrders((p) => p.filter((o) => o._id !== id));
@@ -21853,10 +22000,22 @@ export default function AdminDashboard() {
             } catch {
               showToast("Failed to delete order", false);
             }
-          }}
-          onCancel={() => setActiveConfirm(null)}
-        />
-      )}
+          };
+          return isCompleted ? (
+            <PasswordModal
+              message="Deleting a completed order requires the password. This cannot be undone."
+              password="3890"
+              onConfirm={(pw) => runDelete(pw)}
+              onCancel={() => setActiveConfirm(null)}
+            />
+          ) : (
+            <ConfirmModal
+              message="Delete this order? This cannot be undone."
+              onConfirm={() => runDelete()}
+              onCancel={() => setActiveConfirm(null)}
+            />
+          );
+        })()}
 
       {toast && (
         <div
