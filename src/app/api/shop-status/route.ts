@@ -30,10 +30,12 @@ export async function GET() {
       startingCash: (doc as any)?.startingCash ?? null,
       paidIn: (doc as any)?.paidIn ?? [],
       paidOut: (doc as any)?.paidOut ?? [],
+      deliveryEnabled: (doc as any)?.deliveryEnabled !== false,
     });
   } catch (e) {
     console.error("[shop-status GET]", e);
     return NextResponse.json({
+      deliveryEnabled: true,
       open: false,
       openedAt: null,
       shiftDate: null,
@@ -50,7 +52,18 @@ export async function POST(req: Request) {
     if (authError) return authError;
 
     await connectDB();
-    const { open, openedAt, startingCash, shiftLabel } = await req.json();
+    const body = await req.json();
+    const { open, openedAt, startingCash, shiftLabel, deliveryEnabled } = body;
+
+    // Delivery-only toggle: don't touch shift/open state
+    if (open === undefined && typeof deliveryEnabled === "boolean") {
+      await Setting.findOneAndUpdate(
+        { key: "shopStatus" },
+        { $set: { deliveryEnabled } },
+        { upsert: true, new: true },
+      );
+      return NextResponse.json({ ok: true, deliveryEnabled });
+    }
 
     const update: Record<string, any> = {
       open: !!open,

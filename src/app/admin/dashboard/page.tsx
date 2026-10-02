@@ -19604,6 +19604,7 @@ export default function AdminDashboard() {
   const [showPass, setShowPass] = useState(false);
 
   const [shopOpen, setShopOpen] = useState(true);
+  const [deliveryEnabled, setDeliveryEnabled] = useState(true);
   const [confirmClose, setConfirmClose] = useState(false);
   const [shiftDate, setShiftDate] = useState<string | null>(null);
   const [shopToggling, setShopToggling] = useState(false);
@@ -20061,6 +20062,23 @@ export default function AdminDashboard() {
     setShowHandoverFlow(false);
   }
 
+  async function toggleDelivery() {
+    const next = !deliveryEnabled;
+    setDeliveryEnabled(next);
+    try {
+      const res = await fetch("/api/shop-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deliveryEnabled: next }),
+      });
+      if (!res.ok) throw new Error();
+      showToast(next ? "Delivery enabled" : "Delivery hidden from customers");
+    } catch {
+      setDeliveryEnabled(!next);
+      showToast("Failed to update delivery", false);
+    }
+  }
+
   function showToast(msg: string, ok = true) {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ msg, ok });
@@ -20103,6 +20121,7 @@ export default function AdminDashboard() {
       .then((r) => r.json())
       .then((d) => {
         setShopOpen(d.open);
+        setDeliveryEnabled(d.deliveryEnabled !== false);
         if (d.openedAt) setShopOpenedAt(d.openedAt);
         if (d.shiftDate) setShiftDate(d.shiftDate);
         if (d.shiftLabel) setShiftLabel(d.shiftLabel);
@@ -21177,6 +21196,30 @@ export default function AdminDashboard() {
                   {!isMobile && " CASH MGMT"}
                 </button>
               )}
+              <button
+                onClick={toggleDelivery}
+                style={{
+                  padding: "7px 13px",
+                  background: deliveryEnabled
+                    ? "rgba(34,197,94,0.12)"
+                    : "rgba(248,113,113,0.12)",
+                  border: `1px solid ${deliveryEnabled ? "rgba(34,197,94,0.45)" : "rgba(248,113,113,0.45)"}`,
+                  borderRadius: 8,
+                  color: deliveryEnabled ? T.green : "#f87171",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: "'Cinzel',serif",
+                  letterSpacing: ".06em",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                }}
+              >
+                <Bike size={12} />
+                {!isMobile &&
+                  (deliveryEnabled ? " DELIVERY ON" : " DELIVERY OFF")}
+              </button>
               {/* {isAdmin && (
                 <button
                   onClick={async () => {

@@ -1149,10 +1149,12 @@ function ModeCard({ emoji, title, sub, onClick }: any) {
 }
 
 function ModeSelectScreen({
+  deliveryEnabled = true,
   onSelect,
   shopOpen,
 }: {
   onSelect: (m: OrderType) => void;
+  deliveryEnabled?: boolean;
   shopOpen: boolean;
 }) {
   return (
@@ -1274,16 +1276,18 @@ function ModeSelectScreen({
             sub: "Delivered to your door — GCash only",
             span: true,
           },
-        ].map(({ mode, icon, title, sub, span }) => (
-          <div key={mode} style={{ gridColumn: span ? "1 / -1" : undefined }}>
-            <ModeCard
-              emoji={icon}
-              title={title}
-              sub={sub}
-              onClick={() => shopOpen && onSelect(mode)}
-            />
-          </div>
-        ))}
+        ]
+          .filter((c) => c.mode !== "delivery" || deliveryEnabled)
+          .map(({ mode, icon, title, sub, span }) => (
+            <div key={mode} style={{ gridColumn: span ? "1 / -1" : undefined }}>
+              <ModeCard
+                emoji={icon}
+                title={title}
+                sub={sub}
+                onClick={() => shopOpen && onSelect(mode)}
+              />
+            </div>
+          ))}
       </div>
       <div
         style={{
@@ -7007,6 +7011,7 @@ export default function OrderPage() {
     }[]
   >([]);
   const [shopOpen, setShopOpen] = useState(true);
+  const [deliveryEnabled, setDeliveryEnabled] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [orderError, setOrderError] = useState("");
   const [confirmed, setConfirmed] = useState<Order | null>(null);
@@ -7063,7 +7068,10 @@ export default function OrderPage() {
     fetchMenu();
     fetch("/api/shop-status")
       .then((r) => r.json())
-      .then((d) => setShopOpen(d.open))
+      .then((d) => {
+        setShopOpen(d.open);
+        setDeliveryEnabled(d.deliveryEnabled !== false);
+      })
       .catch(() => {});
 
     // Skip the poll entirely while the tab is backgrounded (phone locked,
@@ -7074,7 +7082,10 @@ export default function OrderPage() {
       if (document.visibilityState !== "visible") return;
       fetch("/api/shop-status")
         .then((r) => r.json())
-        .then((d) => setShopOpen(d.open))
+        .then((d) => {
+          setShopOpen(d.open);
+          setDeliveryEnabled(d.deliveryEnabled !== false);
+        })
         .catch(() => {});
       // Re-check the menu too, on a slower cadence, so a customer whose
       // /order tab has been open a while doesn't keep seeing an item
@@ -7143,6 +7154,13 @@ export default function OrderPage() {
         setOrderError(
           "Store is currently closed — ordering is paused. Please try again later.",
         );
+        setTimeout(() => setOrderError(""), 6000);
+        setSubmitting(false);
+        return;
+      }
+      if (orderType === "delivery" && statusCheck.deliveryEnabled === false) {
+        setDeliveryEnabled(false);
+        setOrderError("Delivery is currently unavailable.");
         setTimeout(() => setOrderError(""), 6000);
         setSubmitting(false);
         return;
@@ -7392,6 +7410,7 @@ export default function OrderPage() {
       )}
       {step === "mode-select" && (
         <ModeSelectScreen
+          deliveryEnabled={deliveryEnabled}
           shopOpen={shopOpen}
           onSelect={(m) => {
             setOrderType(m);
