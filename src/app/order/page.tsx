@@ -2266,9 +2266,29 @@ function MenuScreen({
     return out;
   })();
 
-  const categories = sortTitles(
+  // Food sections first (nudges people to order a meal), then drinks.
+  // Order inside each group still comes from sortTitles.
+  const FOOD_SECTIONS = [
+    "house meals",
+    "house plate",
+    "savory meals",
+    "noodles and soup",
+    "pasta",
+    "student meal",
+    "appetizers and snacks",
+    "waffles",
+  ];
+  const isFoodSection = (t: string) =>
+    FOOD_SECTIONS.includes(
+      String(t).toLowerCase().replace(/&/g, "and").replace(/\s+/g, " ").trim(),
+    );
+  const sortedCategories = sortTitles(
     Array.from(new Set(visibleMenuItems.map((i: MenuItem) => sectionOf(i)))),
   );
+  const categories = [
+    ...sortedCategories.filter((c: string) => isFoodSection(c)),
+    ...sortedCategories.filter((c: string) => !isFoodSection(c)),
+  ];
 
   const [active, setActive] = useState(categories[0] || "");
   const [search, setSearch] = useState("");
