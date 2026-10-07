@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import mongoose from "mongoose";
 
+// Never cache: customers must see the real open/closed state every time.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const SettingSchema = new mongoose.Schema({}, { strict: false });
 const Setting =
   mongoose.models.Setting || mongoose.model("Setting", SettingSchema);
@@ -18,31 +22,33 @@ async function requireStaffSession(req: Request) {
   return null;
 }
 
+const NO_STORE = { "Cache-Control": "no-store, max-age=0" };
+
 export async function GET() {
   try {
     await connectDB();
     const doc = await Setting.findOne({ key: "shopStatus" }).lean();
-    return NextResponse.json({
-      open: (doc as any)?.open ?? false,
-      openedAt: (doc as any)?.openedAt ?? null,
-      shiftDate: (doc as any)?.shiftDate ?? null,
-      shiftLabel: (doc as any)?.shiftLabel ?? "Shift 1",
-      startingCash: (doc as any)?.startingCash ?? null,
-      paidIn: (doc as any)?.paidIn ?? [],
-      paidOut: (doc as any)?.paidOut ?? [],
-      deliveryEnabled: (doc as any)?.deliveryEnabled !== false,
-    });
+    return NextResponse.json(
+      {
+        open: (doc as any)?.open ?? false,
+        openedAt: (doc as any)?.openedAt ?? null,
+        shiftDate: (doc as any)?.shiftDate ?? null,
+        shiftLabel: (doc as any)?.shiftLabel ?? "Shift 1",
+        startingCash: (doc as any)?.startingCash ?? null,
+        paidIn: (doc as any)?.paidIn ?? [],
+        paidOut: (doc as any)?.paidOut ?? [],
+        deliveryEnabled: (doc as any)?.deliveryEnabled !== false,
+      },
+      { headers: NO_STORE },
+    );
   } catch (e) {
     console.error("[shop-status GET]", e);
-    return NextResponse.json({
-      deliveryEnabled: true,
-      open: false,
-      openedAt: null,
-      shiftDate: null,
-      startingCash: null,
-      paidIn: [],
-      paidOut: [],
-    });
+    // Error with NO `open` field, so clients can tell "unknown" from "closed"
+    // instead of a DB hiccup silently blocking every customer order.
+    return NextResponse.json(
+      { error: "Status unavailable" },
+      { status: 503, headers: NO_STORE },
+    );
   }
 }
 

@@ -6,6 +6,7 @@ import { notifyClients } from "@/lib/sse";
 import Redemption from "@/models/Redemption";
 import { Setting } from "@/lib/models/Setting";
 import { verifySession } from "@/lib/auth";
+import mongoose from "mongoose";
 
 async function requireStaffSession(req: NextRequest) {
   const token = req.cookies.get("3s_session")?.value;
@@ -92,6 +93,18 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    return await handlePost(req);
+  } catch (e) {
+    console.error("[orders POST]", e);
+    return NextResponse.json(
+      { error: "Couldn't place the order — please try again." },
+      { status: 500 },
+    );
+  }
+}
+
+async function handlePost(req: NextRequest) {
   await connectDB();
   const body = await req.json();
 
@@ -222,7 +235,12 @@ export async function POST(req: NextRequest) {
   {
     const cartItemIds = items
       .map((i: any) => i.id || i.menuItemId)
-      .filter((id: any) => id && !String(id).startsWith("hardcoded-"));
+      .filter(
+        (id: any) =>
+          id &&
+          !String(id).startsWith("hardcoded-") &&
+          mongoose.isValidObjectId(id),
+      );
 
     if (cartItemIds.length > 0) {
       const currentMenuDocs = await MenuItem.find({
@@ -235,7 +253,12 @@ export async function POST(req: NextRequest) {
       const unavailableNames: string[] = [];
       for (const it of items) {
         const itemId = it.id || it.menuItemId;
-        if (!itemId || String(itemId).startsWith("hardcoded-")) continue;
+        if (
+          !itemId ||
+          String(itemId).startsWith("hardcoded-") ||
+          !mongoose.isValidObjectId(itemId)
+        )
+          continue;
         // Missing from availabilityById means the item was deleted entirely.
         const stillAvailable = availabilityById[String(itemId)];
         if (stillAvailable === false || stillAvailable === undefined) {
@@ -287,7 +310,9 @@ export async function POST(req: NextRequest) {
       "brain fuel",
       "flavored soda",
     ];
-    const ids = items.map((i: any) => i.id || i.menuItemId).filter(Boolean);
+    const ids = items
+      .map((i: any) => i.id || i.menuItemId)
+      .filter((id: any) => id && mongoose.isValidObjectId(id));
     const menuDocs = await MenuItem.find({ _id: { $in: ids } }).lean();
     const categoryByMenuItemId: Record<string, string> = Object.fromEntries(
       menuDocs.map((m: any) => [String(m._id), m.category || ""]),
